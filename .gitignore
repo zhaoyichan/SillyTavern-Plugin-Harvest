@@ -1,0 +1,8 @@
+# 忽略备份与临时文件
+*.bak_*
+*_pre
+*.bak
+*.log
+.DS_Store
+Thumbs.db
+node_modules/

@@ -1,0 +1,14 @@
+{
+  "display_name": "一切皆可收纳",
+  "name": "everything-harvest",
+  "id": "everything-harvest",
+  "version": "1.6.4",
+  "description": "全局聊天记录收藏夹 + 桌面悬浮球收纳器。多选楼层一键收藏、按角色卡分组小窗查看；桌面悬浮球收进托盘集中管理、保持原图标、点击即打开对应插件；内置运行日志观测。米白纯色扁平、小窗可拖动、无毛玻璃无阴影。",
+  "type": "extension",
+  "js": "index.js",
+  "css": "style.css",
+  "author": "liwe",
+  "homePage": "",
+  "repository": { "type": "local", "url": "" },
+  "requires": []
+}
