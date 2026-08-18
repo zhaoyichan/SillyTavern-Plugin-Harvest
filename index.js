@@ -86,7 +86,8 @@
     x: '<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>',
     back: '<svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg>',
     arrow: '<svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>',
-    empty: '<svg viewBox="0 0 24 24"><path d="M4 4h16a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H9l-5 4V6a2 2 0 0 1 2-2z"/></svg>'
+    empty: '<svg viewBox="0 0 24 24"><path d="M4 4h16a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H9l-5 4V6a2 2 0 0 1 2-2z"/></svg>',
+    test: '<svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>',
   };
 
   var state = { selecting: false, selected: {}, selMeta: {}, curFilter: null, pending: null };
@@ -151,6 +152,7 @@
       '</div>' +
       '<div id="hv-logwin" class="hv-window">' +
         '<div class="hv-wtop"><span class="hv-wtitle">运行日志</span>' +
+          '<div class="hv-wbtn" data-a="logtest" title="引号清洗测试">' + IC.test + '</div>' +
           '<div class="hv-wbtn" data-a="logclear" title="清空">' + IC.x + '</div>' +
           '<div class="hv-wbtn" data-a="logcopy" title="复制">' + IC.back + '</div>' +
           '<div class="hv-wbtn" data-a="logclose" title="关闭">' + IC.x + '</div></div>' +
@@ -472,6 +474,51 @@
     } catch (e) { return ''; }
   }
 
+  /* ---------------- 中文双引号去重 ---------------- */
+  // 酒馆正则美化有时会在原文上再包一层全角中文引号，导致阅读页出现 ""…"" (2开2闭)。
+  // 这里在显示 rendered 时，把连续重复的全角引号收敛成一个，修复"两对变一对"。
+  // 双重防护：① 单文本节点内连续收拢；② 相邻文本节点边界处同向引号收拢（覆盖跨节点情形）。
+  var QUOTE_L = '\u201C'; // "
+  var QUOTE_R = '\u201D'; // "
+  function cleanQuotes(html) {
+    if (!html) return html;
+    try {
+      html = String(html).replace(/<style[\s\S]*?<\/style>/gi, '');
+      var d = document.createElement('div');
+      d.innerHTML = html;
+      var walker = document.createTreeWalker(d, NodeFilter.SHOW_TEXT, null, false);
+      var nodes = []; var n;
+      while ((n = walker.nextNode())) nodes.push(n);
+      var fixed = 0;
+      // ① 单文本节点内：连续 2+ 个同向全角引号 → 收拢成 1 个
+      var re = /[\u0022\u0027\u2018\u2019\u201C\u201D]{2,}/g; // 双引号/单引号 · 中文全角/英文半角，连续重复收拢成1
+      nodes.forEach(function (tn) {
+        var t = tn.nodeValue;
+        if (t && re.test(t)) {
+          re.lastIndex = 0;
+          var nt = t.replace(re, function (m) { return m.charAt(0); });
+          if (nt !== t) { tn.nodeValue = nt; fixed++; }
+        }
+      });
+      // ② 相邻文本节点边界：A 以引号结尾 && B 以同向引号开头（且紧邻无元素）→ 去掉 B 开头一个
+      for (var i = 0; i < nodes.length - 1; i++) {
+        var A = nodes[i], B = nodes[i + 1];
+        if (!A || !B) continue;
+        if (A.nextSibling !== B) continue; // 中间夹了元素，不是连续文本
+        var at = A.nodeValue, bt = B.nodeValue;
+        if (!at || !bt) continue;
+        var aLast = at.charAt(at.length - 1);
+        var bFirst = bt.charAt(0);
+        if ((aLast === QUOTE_L && bFirst === QUOTE_L) || (aLast === QUOTE_R && bFirst === QUOTE_R)) {
+          B.nodeValue = bt.slice(1);
+          fixed++;
+        }
+      }
+      if (fixed > 0) logV('quotes', '收敛重复中文引号 共处理=' + fixed);
+      return d.innerHTML;
+    } catch (e) { logV('quotes', 'clean err ' + e.message); return html; }
+  }
+
   /* ---------------- 收藏夹小窗 ---------------- */
   function fmtTime(ts) { if (!ts) return ''; var d = new Date(ts); function p(n) { return (n < 10 ? '0' : '') + n; } return (d.getMonth() + 1) + '·' + d.getDate() + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()); }
   function fmtFullTime(ts) { if (!ts) return ''; var d = new Date(ts); function p(n) { return (n < 10 ? '0' : '') + n; } return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()); }
@@ -538,7 +585,7 @@
       var nm = m.name || (me ? '你' : '角色');
       var cls = 'hv-np' + (me ? ' hv-np-me' : ' hv-np-gu');
       var bodyContent = '';
-      if (m.rendered && String(m.rendered).trim().length > 4) bodyContent = m.rendered;
+      if (m.rendered && String(m.rendered).trim().length > 4) bodyContent = cleanQuotes(m.rendered);
       else bodyContent = esc(m.mes || '');
       h += '<div class="' + cls + '"><span class="hv-nname">' + esc(nm) + '</span><div class="hv-ncontent">' + bodyContent + '</div></div>';
     });
@@ -551,8 +598,104 @@
   }
   function closeReader() { var r = document.getElementById('hv-reader'); if (r) r.classList.remove('hv-on'); }
 
+  function logQuoteTest() {
+    try {
+      var store = loadStore();
+      var items = store && store.items ? store.items : [];
+      if (!items.length) { logV('qtest', '无任何收藏数据'); return; }
+      logV('qtest', '=== 引号全量分析：共 ' + items.length + ' 条收藏 ===');
+      for (var t = 0; t < items.length && t < 6; t++) {
+        var it = items[t];
+        var msgs = it.msgs || [];
+        logV('qtest#i' + t, 'role=' + (it.role || '?') + ' msgs=' + msgs.length + ' time=' + (it.time || ''));
+        for (var j = 0; j < msgs.length && j < 5; j++) {
+          var m = msgs[j];
+          var mesText = String(m.mes || '');
+          var rendered = String(m.rendered || '');
+          var qMes = countQRaw(mesText);
+          // rendered HTML 里引号出现（含实体写法）
+          var htmlQ = (rendered.match(/&(?:ldquo|rdquo|#8220|#8221|#8216|#8217)|[\u201C\u201D\u2018\u2019\u0022\u0027]/g) || []).length;
+          // rendered 可见文本引号
+          var qVis = { c: 0, codes: '' };
+          try { var d = document.createElement('div'); d.innerHTML = rendered; qVis = countQRaw(d.innerText || ''); } catch (e) {}
+          // 清洗测试
+          var clean = '';
+          try { clean = cleanQuotes(rendered); } catch (e) {}
+          var qClean = { c: 0, codes: '' };
+          try { var d2 = document.createElement('div'); d2.innerHTML = clean; qClean = countQRaw(d2.innerText || ''); } catch (e) {}
+          // 引号在 rendered 里的 HTML 上下文（一次性 match 收集，避免死循环）
+          var quotes = rendered.match(/&(?:ldquo|rdquo|#8220|#8221|#8216|#8217)|[\u201C\u201D\u2018\u2019\u0022\u0027]/g) || [];
+          var ctx = [];
+          if (quotes.length) {
+            var pos = 0, seen = 0;
+            for (var z = 0; z < quotes.length && seen < 8; z++) {
+              var qs = quotes[z];
+              var st = rendered.indexOf(qs, pos);
+              if (st < 0) break;
+              var seg = rendered.slice(Math.max(0, st - 25), st + 25).replace(/\s+/g, ' ');
+              var key = qs + '@' + seg.slice(0, 12);
+              if (ctx.indexOf(key) < 0) { ctx.push('[' + qs + '...' + seg + ']'); seen++; }
+              pos = st + qs.length;
+            }
+          }
+          logV('qtest#i' + t + 'm' + j,
+            'mes(' + qMes.c + ') HTML引号=' + htmlQ + ' 可见引号=' + qVis.c + ' 清洗后=' + qClean.c + ' diff=' + (qVis.c - qClean.c) +
+            ' style=' + (/<style/i.test(rendered) ? 'Y' : 'N') + ' span=' + (/<span/i.test(rendered) ? 'Y' : 'N') +
+            ' mesCode=' + qMes.codes.substring(0, 60) +
+            ' 句="' + mesText.replace(/\s+/g, ' ').slice(0, 18) + '"');
+          if (ctx.length) logV('qtest-ctx#i' + t + 'm' + j, 'ctx=' + ctx.slice(0, 4).join(' '));
+        }
+      }
+      // === dump 当前阅读页实际显示的段落 HTML（用户肉眼所见） ===
+      try {
+        var rin = document.getElementById('hv-rin');
+        if (rin) {
+          var ncc = rin.querySelectorAll('.hv-ncontent');
+          var shown = 0;
+          ncc.forEach(function (nc) {
+            var hh = nc.innerHTML || '';
+            var qnum = (hh.match(/\u201C|\u201D|&(?:ldquo|rdquo|#8220|#8221)|\u0022/g) || []).length;
+            if (qnum >= 4 && shown < 3) { shown++; logV('qtest-shown#' + shown, '引号=' + qnum + ' HTML="' + hh.replace(/\s+/g, ' ').slice(0, 260) + '"'); }
+          });
+          if (!shown) logV('qtest-shown', '阅读页无引号>=4段落（请打开引号多的收藏）');
+        } else { logV('qtest-shown', '未打开阅读页'); }
+        // 伪元素引号检测（限制节点数防卡）
+        var pe = 0, plist = [], lim = 150;
+        if (rin) {
+          var all = rin.querySelectorAll('.hv-ncontent *');
+          for (var k = 0; k < all.length && k < lim; k++) {
+            var el = all[k];
+            try {
+              var bsc = getComputedStyle(el, '::before').content || '';
+              var afc = getComputedStyle(el, '::after').content || '';
+              var hit = (bsc.indexOf('\u201C') >= 0 || bsc.indexOf('\u201D') >= 0 || bsc.indexOf('\u0022') >= 0 || afc.indexOf('\u201C') >= 0 || afc.indexOf('\u201D') >= 0 || afc.indexOf('\u0022') >= 0);
+              if (hit) {
+                pe++;
+                var cls = el.className ? String(el.className) : el.tagName;
+                if (plist.length < 12) plist.push('[' + cls + '=' + (afc || bsc).slice(0, 20) + ']');
+              }
+            } catch (e) {}
+          }
+          logV('qtest-pseudo', '伪元素引号节点=' + pe + (plist.length ? ' 详情=' + plist.join(' ') : ''));
+        }
+      } catch (e) { logV('qtest-pseudo', 'err ' + e.message); }
+      logV('qtest', '=== 分析结束（diff>0=纯文本连续引号被收敛；HTML引号含实体/span说明需跨元素处理） ===');
+    } catch (e) { logV('qtest', 'err ' + e.message); }
+  }
+  function countQRaw(st) {
+    var c = 0, codes = [];
+    var s2 = String(st || '');
+    for (var i = 0; i < s2.length; i++) {
+      var cc = s2.charCodeAt(i);
+      if (cc === 34 || cc === 39 || cc === 8216 || cc === 8217 || cc === 8220 || cc === 8221) { c++; codes.push(cc); }
+    }
+    return { c: c, codes: codes.join(',') };
+  }
+
+
   /* ---------------- 多选收藏（唯一 key，顶部实时提示） ---------------- */
   function emitPickButtons() {
+    if (!state.selecting) return;
     var chat = document.getElementById('chat'); if (!chat) return;
     chat.querySelectorAll('.mes').forEach(function (mes) {
       if (!mes.classList.contains('hv-pickable')) mes.classList.add('hv-pickable');
@@ -748,7 +891,7 @@
       var lw = document.getElementById('hv-logwin');
       if (lw && lw.classList.contains('hv-on')) {
         var act3 = e.target.closest('[data-a]');
-        if (act3) { var a4 = act3.dataset.a; if (a4 === 'logclose') lw.classList.remove('hv-on'); else if (a4 === 'logclear') clearLog(); else if (a4 === 'logcopy') copyLog(); }
+        if (act3) { var a4 = act3.dataset.a; if (a4 === 'logclose') lw.classList.remove('hv-on'); else if (a4 === 'logclear') clearLog(); else if (a4 === 'logcopy') copyLog(); else if (a4 === 'logtest') logQuoteTest(); }
       }
       // 多选：点击整条消息
       var mes = e.target.closest('#chat .mes.hv-pickable');

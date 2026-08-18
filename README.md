@@ -42,7 +42,7 @@ web/extensions/third-party/SillyTavern-Plugin-Harvest/
 
 ## 📌 版本
 
-见 [CHANGELOG](docs/CHANGELOG.md)（当前主线 **v1.6.x**：小窗真居中、多选唯一键、图标对调、重启自动重新收纳、日间干爽风等）。
+见 [CHANGELOG](docs/CHANGELOG.md)（当前主线 **v1.7.3**：小窗真居中、多选唯一键、图标对调、重启自动重新收纳、日间干爽风、阅读页中英文引号去重、修复q标签自动引号导致的两对引号、以及修复插件干扰酒馆本体聊天渲染的白屏问题等）。
 
 ## 📄 许可
 
