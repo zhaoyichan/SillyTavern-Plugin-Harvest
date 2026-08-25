@@ -18,6 +18,7 @@
   var LS_KEY = 'hv_store_v1';
   var ORBS_KEY = 'hv_orbs_v1';
   var POS_KEY = 'hv_pill_pos';
+  var FOLD_KEY = 'hv_fold_v1';
 
   /* ---------------- 运行日志（观测） ---------------- */
   var LOGS = [];
@@ -563,6 +564,8 @@
     var t = m.role === 'user' ? (m.name || '你') + '：' : (m.name ? m.name + '：' : '');
     return (t + String(m.mes || '').replace(/\s+/g, ' ').slice(0, 26)) || '（空白）';
   }
+  function loadFold() { try { var d = JSON.parse(localStorage.getItem(FOLD_KEY) || '{}'); return d && typeof d === 'object' ? d : {}; } catch (e) { return {}; } }
+  function saveFold(m) { try { localStorage.setItem(FOLD_KEY, JSON.stringify(m)); } catch (e) { /* ignore */ } }
   function renderPanel(filter) {
     var body = document.getElementById('hv-body'); if (!body) return;
     var store = loadStore();
@@ -589,11 +592,17 @@
       (groups[key] = groups[key] || { name: name, items: [] }).items.push(it);
     });
     var html = '';
+    var curChat = currentChatName();
+    var foldMem = loadFold();
     Object.keys(groups).forEach(function (key) {
       var grp = groups[key]; var r = grp.name;
       var arr = grp.items.slice().sort(function (a, b) { return (b.time || 0) - (a.time || 0); });
-      html += '<div class="hv-grp" data-role="' + esc(key) + '">' +
-        '<div class="hv-ghead" data-gfold="' + esc(key) + '"><span class="hv-gband" style="background:' + colorFor(r) + '"></span>' +
+      // 折叠判定：默认=当前聊天收藏的组展开，其他折叠；若有记忆则用记忆覆盖默认
+      var hasCur = curChat && arr.some(function (it) { return !!(it && it.chatTitle) && String(it.chatTitle) === curChat; });
+      var defaultFold = !hasCur;
+      var foldState = (Object.prototype.hasOwnProperty.call(foldMem, r)) ? (foldMem[r] === 'fold') : defaultFold;
+      html += '<div class="hv-grp' + (foldState ? ' hv-fold' : '') + '" data-role="' + esc(key) + '">' +
+        '<div class="hv-ghead" data-gfold="' + esc(key) + '" data-gfold-name="' + esc(r) + '"><span class="hv-gband" style="background:' + colorFor(r) + '"></span>' +
         '<span class="hv-gname">' + esc(r) + '</span><span class="hv-gcount">' + arr.length + ' 条</span>' +
         '<span class="hv-garrow">' + IC.arrow + '</span></div>' +
         '<div class="hv-gbody">';
@@ -997,7 +1006,14 @@
         var fl = e.target.closest('.hv-fl');
         if (fl) { state.curFilter = fl.dataset.f; renderPanel(state.curFilter); return; }
         var gh = e.target.closest('[data-gfold]');
-        if (gh) { var g = gh.closest('.hv-grp'); if (g) g.classList.toggle('hv-fold'); return; }
+        if (gh) {
+          var g = gh.closest('.hv-grp'); if (!g) return;
+          var folded = g.classList.toggle('hv-fold');
+          // 记忆该分组的折叠状态
+          var fname = gh.getAttribute('data-gfold-name');
+          if (fname) { var fm = loadFold(); fm[fname] = folded ? 'fold' : 'open'; saveFold(fm); }
+          return;
+        }
         var mv = e.target.closest('[data-move]');
         if (mv) { openMove(mv.dataset.move); e.preventDefault(); e.stopPropagation(); return; }
         var li = e.target.closest('.hv-list-item');
