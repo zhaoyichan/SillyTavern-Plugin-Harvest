@@ -88,9 +88,10 @@
     arrow: '<svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>',
     empty: '<svg viewBox="0 0 24 24"><path d="M4 4h16a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H9l-5 4V6a2 2 0 0 1 2-2z"/></svg>',
     test: '<svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>',
+    folder: '<svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/></svg>',
   };
 
-  var state = { selecting: false, selected: {}, selMeta: {}, curFilter: null, pending: null };
+  var state = { selecting: false, selected: {}, selMeta: {}, curFilter: null, pending: null, mgTarget: null };
   var collectMode = false;
   var mo = null;
   var doneInit = false;
@@ -153,6 +154,7 @@
       '<div id="hv-logwin" class="hv-window">' +
         '<div class="hv-wtop"><span class="hv-wtitle">运行日志</span>' +
           '<div class="hv-wbtn" data-a="logtest" title="引号清洗测试">' + IC.test + '</div>' +
+          '<div class="hv-wbtn" data-a="orbscan" title="扫描悬浮球(诊断)">' + IC.arrow + '</div>' +
           '<div class="hv-wbtn" data-a="logclear" title="清空">' + IC.x + '</div>' +
           '<div class="hv-wbtn" data-a="logcopy" title="复制">' + IC.back + '</div>' +
           '<div class="hv-wbtn" data-a="logclose" title="关闭">' + IC.x + '</div></div>' +
@@ -164,7 +166,17 @@
           '<div class="hv-crow"><span class="hv-k">角色卡</span><b id="hv-conf-role"></b></div>' +
           '<div class="hv-crow"><span class="hv-k">楼层</span><span id="hv-conf-floors"></span></div>' +
           '<div class="hv-crow"><span class="hv-k">备注</span><input class="hv-note" id="hv-conf-note" placeholder="可选：写一句你收藏它的原因"></div>' +
+          '<div class="hv-crow"><span class="hv-k">分组</span><input class="hv-note" id="hv-conf-group" placeholder="可选：自定义组名（如 日常/学习），留空则按角色卡分组"></div>' +
           '<div class="hv-cbtns"><button class="hv-no" data-a="confno">取消</button><button class="hv-ok" data-a="confok">确认收藏</button></div>' +
+        '</div>' +
+      '</div>' +
+      '<div id="hv-movegrp">' +
+        '<div class="hv-card">' +
+          '<div class="hv-ct">' + IC.folder + ' 移到分组</div>' +
+          '<div class="hv-mg-list" id="hv-mg-list"></div>' +
+          '<input class="hv-note" id="hv-mg-new" placeholder="输入新分组名，回车加入">' +
+          '<div class="hv-mg-tip">点上方分组直接移动；或输入新名字后点下方按钮</div>' +
+          '<div class="hv-cbtns"><button class="hv-no" data-a="mgclose">取消</button><button class="hv-ok" data-a="mgadd">加入新分组</button></div>' +
         '</div>' +
       '</div>';
     document.body.appendChild(root);
@@ -307,6 +319,30 @@
     var hint = document.getElementById('hv-pick-orbs'); if (hint) hint.style.display = 'none';
     renderTray();
     logV('collect', '退出收纳模式');
+  }
+  // 通用悬浮球宿主探测：优先 fab 类，退回按 fixed+小圆球特征沿祖先链找（兼容不含 fab 的球，如 xhs-float-btn）
+  function findOrbHost(t) {
+    if (!t) return null;
+    var el = t;
+    var fab = (el && el.closest) ? el.closest('[id*="fab"], [class*="fab"], [id*="FAB"], [class*="FAB"]') : null;
+    if (fab && fab.id !== 'hv-pill' && !(fab.closest && fab.closest('#hv-root'))) return fab;
+    while (el && el !== document.body && el !== document.documentElement) {
+      if (el.id === 'hv-pill') break;
+      if (el.closest && el.closest('#hv-root')) break;
+      try {
+        var cs = getComputedStyle(el);
+        var pos = cs.position;
+        var r = el.getBoundingClientRect();
+        var w = r.width, h = r.height;
+        if (pos === 'fixed' && w > 20 && w < 96 && h > 20 && h < 96) {
+          // 命中可疑小浮球：确认它是按钮/可点击元素或含图标，且不在插件自身里
+          var tag = el.tagName ? el.tagName.toLowerCase() : '';
+          if (tag === 'button' || tag === 'a' || tag === 'div' || el.querySelector) return el;
+        }
+      } catch (e2) { /* ignore */ }
+      el = el.parentNode;
+    }
+    return null;
   }
   function collectEl(el) {
     if (!el || el.id === 'hv-pill') return false;
@@ -531,27 +567,42 @@
     var body = document.getElementById('hv-body'); if (!body) return;
     var store = loadStore();
     var list = store.items.slice().sort(function (a, b) { return (b.time || 0) - (a.time || 0); });
-    if (filter && filter !== '__all') list = list.filter(function (it) { return it.role === filter; });
-    var roles = []; var seen = {};
-    store.items.forEach(function (it) { var r = it.role || '未分类'; if (!seen[r]) { seen[r] = 1; roles.push(r); } });
+    if (filter && filter !== '__all') {
+      if (filter.indexOf('g:') === 0) { var gf = filter.slice(2); list = list.filter(function (it) { return (it && it.group && String(it.group).trim()) === gf; }); }
+      else if (filter.indexOf('r:') === 0) { var rf = filter.slice(2); list = list.filter(function (it) { var rg = (it && it.group) ? String(it.group).trim() : ''; return rg === '' && ((it && it.role) || '未分类') === rf; }); }
+    }
+    var groupsAll = []; var gseen = {};
+    store.items.forEach(function (it) { var g = (it && it.group) ? String(it.group).trim() : ''; if (g && !gseen[g]) { gseen[g] = 1; groupsAll.push(g); } });
+    var rolesAll = []; var rseen = {};
+    store.items.forEach(function (it) { var r = (it && it.role) || '未分类'; if (!rseen[r]) { rseen[r] = 1; rolesAll.push(r); } });
     var fh = '<div class="hv-fl' + (!filter || filter === '__all' ? ' hv-on' : '') + '" data-f="__all">全部</div>';
-    roles.forEach(function (r) { fh += '<div class="hv-fl' + (r === filter ? ' hv-on' : '') + '" data-f="' + esc(r) + '">' + esc(r) + '</div>'; });
+    groupsAll.forEach(function (g) { var f = 'g:' + g; fh += '<div class="hv-fl' + (filter === f ? ' hv-on' : '') + '" data-f="' + esc(f) + '">' + esc(g) + '</div>'; });
+    rolesAll.forEach(function (r) { var f = 'r:' + r; fh += '<div class="hv-fl' + (filter === f ? ' hv-on' : '') + '" data-f="' + esc(f) + '">' + esc(r) + '</div>'; });
     var fe = document.getElementById('hv-filter'); if (fe) fe.innerHTML = fh;
     if (!list.length) { body.innerHTML = '<div class="hv-empty">' + IC.empty + '<br>还没有收藏<br>点托盘里的五角星，选中楼层即可收藏</div>'; return; }
     var groups = {};
-    list.forEach(function (it) { var r = it.role || '未分类'; (groups[r] = groups[r] || []).push(it); });
+    list.forEach(function (it) {
+      var g = (it && it.group) ? String(it.group).trim() : '';
+      var key, name;
+      if (g) { key = 'g:' + g; name = g; }
+      else { var rr = (it && it.role) || '未分类'; key = 'r:' + rr; name = rr; }
+      (groups[key] = groups[key] || { name: name, items: [] }).items.push(it);
+    });
     var html = '';
-    Object.keys(groups).forEach(function (r) {
-      var arr = groups[r].slice().sort(function (a, b) { return (b.time || 0) - (a.time || 0); });
-      html += '<div class="hv-grp" data-role="' + esc(r) + '">' +
-        '<div class="hv-ghead" data-gfold="' + esc(r) + '"><span class="hv-gband" style="background:' + colorFor(r) + '"></span>' +
+    Object.keys(groups).forEach(function (key) {
+      var grp = groups[key]; var r = grp.name;
+      var arr = grp.items.slice().sort(function (a, b) { return (b.time || 0) - (a.time || 0); });
+      html += '<div class="hv-grp" data-role="' + esc(key) + '">' +
+        '<div class="hv-ghead" data-gfold="' + esc(key) + '"><span class="hv-gband" style="background:' + colorFor(r) + '"></span>' +
         '<span class="hv-gname">' + esc(r) + '</span><span class="hv-gcount">' + arr.length + ' 条</span>' +
         '<span class="hv-garrow">' + IC.arrow + '</span></div>' +
         '<div class="hv-gbody">';
       arr.forEach(function (it) {
+        var gLbl = (it && it.group && String(it.group).trim()) ? ' · 组:' + esc(String(it.group).trim()) : '';
         html += '<div class="hv-list-item" data-id="' + esc(it.id) + '">' +
-          '<div class="hv-li-tit">' + esc(snip(it.msgs, 0) || '未命名') + '</div>' +
-          '<div class="hv-li-sub">' + esc(fmtTime(it.time)) + ' · 第 ' + esc(it.startFloor) + '-' + esc(it.endFloor) + ' 楼 · ' + esc(it.chatTitle || '') + '</div></div>';
+          '<div class="hv-li-tit">' + esc((it.note && String(it.note).trim()) ? String(it.note) : (snip(it.msgs, 0) || '未命名')) + '</div>' +
+          '<div class="hv-li-sub">' + esc(fmtTime(it.time)) + ' · 第 ' + esc(it.startFloor) + '-' + esc(it.endFloor) + ' 楼 · ' + esc(it.chatTitle || '') + gLbl + '</div>' +
+          '<div class="hv-li-move" data-move="' + esc(it.id) + '" title="移到分组">' + IC.folder + '</div></div>';
       });
       html += '</div></div>';
     });
@@ -800,6 +851,7 @@
     document.getElementById('hv-conf-role').textContent = role;
     document.getElementById('hv-conf-floors').textContent = floors.length ? ('第 ' + floors[0] + ' - ' + floors[floors.length - 1] + ' 楼') : '若干楼层';
     var note = document.getElementById('hv-conf-note'); if (note) note.value = '';
+    var gpEl0 = document.getElementById('hv-conf-group'); if (gpEl0) gpEl0.value = '';
     document.getElementById('hv-confirm').classList.add('hv-on');
     state.pending = { ids: floors, msgs: msgs, role: role, count: msgs.length };
     setTimeout(function () { var n = document.getElementById('hv-conf-note'); if (n) n.focus(); }, 120);
@@ -809,8 +861,10 @@
     if (!p || !p.msgs.length) return;
     var noteEl = document.getElementById('hv-conf-note');
     var note = noteEl ? (noteEl.value || '').trim() : '';
+    var gpEl = document.getElementById('hv-conf-group');
+    var group = gpEl ? (gpEl.value || '').trim() : '';
     var store = loadStore();
-    store.items.push({ id: 'h' + Date.now() + '_' + Math.floor(Math.random() * 1e4), role: p.role || '未分类', chatTitle: currentChatName(), startFloor: p.ids[0], endFloor: p.ids[p.ids.length - 1], time: Date.now(), note: note, msgs: p.msgs });
+    store.items.push({ id: 'h' + Date.now() + '_' + Math.floor(Math.random() * 1e4), role: p.role || '未分类', chatTitle: currentChatName(), startFloor: p.ids[0], endFloor: p.ids[p.ids.length - 1], time: Date.now(), note: note, group: group, msgs: p.msgs });
     persist(store);
     document.getElementById('hv-confirm').classList.remove('hv-on');
     var n = p.count; exitSelecting();
@@ -828,6 +882,66 @@
     if (panel && panel.classList.contains('hv-on')) renderPanel(state.curFilter);
     hvToast('已删除', 'info');
   }
+  function scanOrbs() {
+    try {
+      var out = [];
+      var all = document.querySelectorAll('body *');
+      var n = 0;
+      for (var i = 0; i < all.length && i < 8000; i++) {
+        var el = all[i];
+        var r = null;
+        try { r = el.getBoundingClientRect(); } catch (e2) { continue; }
+        if (!r || !el) continue;
+        // 近似悬浮球：fixed 定位 or 很小的块级元素(非文本)，且尺寸在 20~90px
+        var cs = null; try { cs = getComputedStyle(el); } catch (e3) { cs = null; }
+        if (!cs) continue;
+        var pos = cs.position;
+        var w = r.width, h = r.height;
+        var tag = el.tagName ? el.tagName.toLowerCase() : '';
+        if (tag === 'body' || tag === 'html' || tag === 'script' || tag === 'style' || tag === 'br') continue;
+        var isBall = (pos === 'fixed' || pos === 'absolute');
+        isBall = isBall && w > 16 && w < 100 && h > 16 && h < 100;
+        if (!isBall) continue;
+        // 排除插件自身
+        if (el.closest && (el.closest('#hv-root') || el.id === 'hv-pill' || el.closest('#hv-tray'))) continue;
+        var cls = cs.className || '';
+        var tagc = (tag + (el.id ? '#' + el.id : '') + (el.className ? '.' + String(el.className).replace(/\s+/g, '.').slice(0, 50) : '')).slice(0, 90);
+        out.push('[' + n + '] ' + tagc + ' pos=' + pos + ' ' + Math.round(w) + 'x' + Math.round(h) + ' title=' + (el.title || '') + ' text=' + (el.textContent || '').trim().slice(0, 12) + ' containsFab=' + (/(fab)/i.test(tagc) ? 'Y' : 'N'));
+        n++;
+      }
+      logV('orbscan', n + ' 个疑似悬浮球：\n' + out.join('\n'));
+      hvToast('已扫描 ' + n + ' 个疑似悬浮球', 'info');
+    } catch (e) { logV('orbscan', 'err ' + e.message); }
+  }
+
+  function openMove(id) {
+    var store = loadStore(); var it = null;
+    store.items.forEach(function (x) { if (String(x.id) === String(id)) it = x; });
+    if (!it) { hvToast('未找到该收藏', 'warn'); return; }
+    state.mgTarget = id;
+    var box = document.getElementById('hv-mg-list'); if (!box) return;
+    var gseen = {};
+    store.items.forEach(function (x) { var g = (x && x.group) ? String(x.group).trim() : ''; if (g) gseen[g] = 1; });
+    var html = '<div class="hv-mg-opt" data-mgg="">无分组（按角色卡）</div>';
+    Object.keys(gseen).forEach(function (g) { html += '<div class="hv-mg-opt" data-mgg="' + esc(g) + '">' + esc(g) + '</div>'; });
+    box.innerHTML = html;
+    var nv = document.getElementById('hv-mg-new'); if (nv) nv.value = '';
+    var mg = document.getElementById('hv-movegrp'); if (mg) mg.classList.add('hv-on');
+    logV('move', '打开移到分组 id=' + id);
+  }
+  function doMoveGroup(g) {
+    var id = state.mgTarget; if (!id) { hvToast('未指定要移动的收藏', 'warn'); return; }
+    var store = loadStore(); var moved = false;
+    store.items.forEach(function (x) { if (String(x.id) === String(id)) { x.group = g; moved = true; } });
+    if (moved) { persist(store); }
+    var mg = document.getElementById('hv-movegrp'); if (mg) mg.classList.remove('hv-on');
+    state.mgTarget = null;
+    hvToast(moved ? ('已移动：' + (g ? ('「' + g + '」') : '无分组')) : '未找到该收藏', moved ? 'ok' : 'warn');
+    var panel = document.getElementById('hv-panel');
+    if (panel && panel.classList.contains('hv-on')) renderPanel(state.curFilter);
+    logV('move', '移动到 ' + (g || '(无分组)') + ' moved=' + moved);
+  }
+
   function doExport() {
     var store = loadStore();
     var blob = new Blob([JSON.stringify(store, null, 2)], { type: 'application/json' });
@@ -844,7 +958,13 @@
         var po = e.target.closest('#hv-pick-orbs');
         if (po) { var a0 = e.target.closest('[data-a]'); if (a0) { if (a0.dataset.a === 'orbcancel' || a0.dataset.a === 'orbdone') endCollect(); } return; }
         e.preventDefault(); e.stopPropagation();
-        var orbEl = e.target.closest('[id*="fab"], [class*="fab"], [id*="FAB"], [class*="FAB"]');
+        var orbEl = findOrbHost(e.target);
+        try {
+          var tg = e.target; var tgInfo = (tg && tg.tagName ? tg.tagName.toLowerCase() : '?') + (tg && tg.id ? '#' + tg.id : '') + (tg && tg.className ? '.' + String(tg.className).replace(/\s+/g, '.').slice(0, 60) : '');
+          var hostInfo = '';
+          if (orbEl) hostInfo = (orbEl.tagName ? orbEl.tagName.toLowerCase() : '?') + (orbEl.id ? '#' + orbEl.id : '') + (orbEl.className ? '.' + String(orbEl.className).replace(/\s+/g, '.').slice(0, 60) : '');
+          logV('collect-dbg', '点击目标=' + tgInfo + ' | 悬浮宿主=' + (hostInfo || '(null，未命中)') + ' | 命中=' + (orbEl ? '是' : '否'));
+        } catch (dbgE) { /* ignore */ }
         if (orbEl && collectEl(orbEl)) { renderTray(); }
         return;
       }
@@ -878,6 +998,8 @@
         if (fl) { state.curFilter = fl.dataset.f; renderPanel(state.curFilter); return; }
         var gh = e.target.closest('[data-gfold]');
         if (gh) { var g = gh.closest('.hv-grp'); if (g) g.classList.toggle('hv-fold'); return; }
+        var mv = e.target.closest('[data-move]');
+        if (mv) { openMove(mv.dataset.move); e.preventDefault(); e.stopPropagation(); return; }
         var li = e.target.closest('.hv-list-item');
         if (li) { openReader(li.dataset.id); return; }
       }
@@ -888,10 +1010,19 @@
         var del = e.target.closest('[data-del]');
         if (del) { doDelete(del.dataset.del); return; }
       }
+      var mg = document.getElementById('hv-movegrp');
+      if (mg && mg.classList.contains('hv-on')) {
+        var a7 = e.target.closest('[data-a]');
+        if (a7) { var a8 = a7.dataset.a; if (a8 === 'mgclose') mg.classList.remove('hv-on'); else if (a8 === 'mgadd') { var nv2 = (document.getElementById('hv-mg-new').value || '').trim(); if (nv2) doMoveGroup(nv2); else hvToast('请输入分组名', 'warn'); } return; }
+        var mgo = e.target.closest('[data-mgg]');
+        if (mgo) { doMoveGroup(mgo.dataset.mgg); return; }
+        if (e.target === mg) mg.classList.remove('hv-on');
+        return;
+      }
       var lw = document.getElementById('hv-logwin');
       if (lw && lw.classList.contains('hv-on')) {
         var act3 = e.target.closest('[data-a]');
-        if (act3) { var a4 = act3.dataset.a; if (a4 === 'logclose') lw.classList.remove('hv-on'); else if (a4 === 'logclear') clearLog(); else if (a4 === 'logcopy') copyLog(); else if (a4 === 'logtest') logQuoteTest(); }
+        if (act3) { var a4 = act3.dataset.a; if (a4 === 'logclose') lw.classList.remove('hv-on'); else if (a4 === 'logclear') clearLog(); else if (a4 === 'logcopy') copyLog(); else if (a4 === 'logtest') logQuoteTest(); else if (a4 === 'orbscan') scanOrbs(); }
       }
       // 多选：点击整条消息
       var mes = e.target.closest('#chat .mes.hv-pickable');
@@ -921,6 +1052,15 @@
         return;
       }
       if (!e.target.closest('#hv-tray') && !e.target.closest('#hv-pill')) closeTray();
+    });
+    document.addEventListener('keydown', function (k) {
+      var mg = document.getElementById('hv-movegrp');
+      if (mg && mg.classList.contains('hv-on') && k.key === 'Enter') {
+        var inp = document.getElementById('hv-mg-new');
+        if (inp && inp === document.activeElement) {
+          var nv3 = (inp.value || '').trim(); if (nv3) { doMoveGroup(nv3); k.preventDefault(); k.stopPropagation(); } else hvToast('请输入分组名', 'warn');
+        }
+      }
     });
   }
 
