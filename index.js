@@ -90,9 +90,11 @@
     empty: '<svg viewBox="0 0 24 24"><path d="M4 4h16a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H9l-5 4V6a2 2 0 0 1 2-2z"/></svg>',
     test: '<svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>',
     folder: '<svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/></svg>',
+    pic: '<svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="8.5" cy="10" r="1.5"/><path d="M21 15l-5-5-9 8"/></svg>',
+    export: '<svg viewBox="0 0 24 24"><path d="M12 3v12M7 8l5-5 5 5M4 13v6a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-6"/></svg>',
   };
 
-  var state = { selecting: false, selected: {}, selMeta: {}, curFilter: null, pending: null, mgTarget: null };
+  var state = { selecting: false, selected: {}, selMeta: {}, curFilter: null, pending: null, mgTarget: null, expSelect: false, expSel: {} };
   var collectMode = false;
   var mo = null;
   var doneInit = false;
@@ -135,12 +137,18 @@
         '<span class="hv-cancel" data-a="cancel">取消</span>' +
         '<button class="hv-go" data-a="go">收纳</button>' +
       '</div>' +
+      '<div id="hv-exp-hint" class="hv-pick-hint">' +
+        '<span>已选 <b class="hv-exp-count">0</b> 条</span>' +
+        '<span class="hv-cancel" data-a="expall">全选</span>' +
+        '<button class="hv-go" data-a="expgo">导出</button>' +
+        '<span class="hv-cancel" data-a="expcancel">取消</span>' +
+      '</div>' +
       '<div id="hv-pick-orbs" class="hv-pick-orbs" style="display:none"><span>点击要收纳的悬浮球</span><span class="hv-cancel" data-a="orbcancel">取消</span><button class="hv-done" data-a="orbdone">完成</button></div>' +
       '<div id="hv-tray"></div>' +
       '<div id="hv-panel" class="hv-window">' +
         '<div class="hv-wtop"><span class="hv-wtitle">一切皆可收纳</span>' +
           '<div class="hv-wbtn" data-a="togglepanel" title="全屏/小窗">' + IC.full + '</div>' +
-          '<div class="hv-wbtn" data-a="export" title="导出">' + IC.log + '</div>' +
+          '<div class="hv-wbtn" data-a="export" title="选择导出">' + IC.export + '</div>' +
           '<div class="hv-wbtn" data-a="closepanel" title="关闭">' + IC.x + '</div></div>' +
         '<div class="hv-filter" id="hv-filter"></div>' +
         '<div class="hv-body" id="hv-body"></div>' +
@@ -156,6 +164,7 @@
         '<div class="hv-wtop"><span class="hv-wtitle">运行日志</span>' +
           '<div class="hv-wbtn" data-a="logtest" title="引号清洗测试">' + IC.test + '</div>' +
           '<div class="hv-wbtn" data-a="orbscan" title="扫描悬浮球(诊断)">' + IC.arrow + '</div>' +
+          '<div class="hv-wbtn" data-a="scanimg" title="扫图(找生图)">' + IC.pic + '</div>' +
           '<div class="hv-wbtn" data-a="logclear" title="清空">' + IC.x + '</div>' +
           '<div class="hv-wbtn" data-a="logcopy" title="复制">' + IC.back + '</div>' +
           '<div class="hv-wbtn" data-a="logclose" title="关闭">' + IC.x + '</div></div>' +
@@ -403,55 +412,93 @@
   function makeDraggable() {
     var pill = document.getElementById('hv-pill'); if (!pill) return;
     var sx = 0, sy = 0, ox = 0, oy = 0, dragging = false, moved = false;
-    pill.addEventListener('pointerdown', function (e) {
+    // 统一取触点坐标（pointer/touch/mouse 都行）
+    function getXY(e) {
+      if (e.touches && e.touches.length) return { x: e.touches[0].clientX, y: e.touches[0].clientY };
+      if (e.changedTouches && e.changedTouches.length) return { x: e.changedTouches[0].clientX, y: e.changedTouches[0].clientY };
+      return { x: e.clientX, y: e.clientY };
+    }
+    function onDown(e) {
       if (collectMode) { e.stopPropagation(); return; }
+      // 允许触摸/指针/mouse 按下（注意：这里不 preventDefault，否则会吞掉 click，
+      // 导致点悬浮球打不开托盘/悬浮窗）
+      if (e.button != null && e.button !== 0 && e.type !== 'touchstart') return;
       dragging = true; moved = false;
       suppressPillClick = 0;
       pill.classList.add('hv-squeeze');
       var p = loadPos();
-      sx = e.clientX; sy = e.clientY; ox = p.x; oy = p.y;
-      if (pill.setPointerCapture) { try { pill.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ } }
-    });
-    pill.addEventListener('pointermove', function (e) {
+      var c = getXY(e);
+      sx = c.x; sy = c.y; ox = p.x; oy = p.y;
+    }
+    function onMove(e) {
       if (!dragging) return;
-      var dx = e.clientX - sx, dy = e.clientY - sy;
-      if (Math.abs(dx) + Math.abs(dy) > 5) moved = true;
+      var c = getXY(e);
+      if (c.x == null && c.y == null) return;
+      var dx = c.x - sx, dy = c.y - sy;
+      if (Math.abs(dx) + Math.abs(dy) > 4) moved = true;
       if (moved) {
         var p = { x: Math.max(0, Math.min(window.innerWidth - 32, ox + dx)), y: Math.max(0, Math.min(window.innerHeight - 32, oy + dy)) };
         savePos(p); positionWindows();
+        if (e.preventDefault) e.preventDefault();
       }
-    });
-    function up() {
+    }
+    function onUp(e) {
       if (!dragging) return;
       dragging = false; pill.classList.remove('hv-squeeze');
       positionWindows();
       if (moved) { closeTray(); suppressPillClick = Date.now() + 300; }
     }
-    pill.addEventListener('pointerup', up);
-    pill.addEventListener('pointercancel', up);
+    // 按下绑定在 pill；移动/抬起监听在 document 上（即使一下子没捕获也能收到，解决移动端拖动不跟手）
+    pill.addEventListener('pointerdown', onDown);
+    pill.addEventListener('touchstart', onDown, { passive: false });
+    pill.addEventListener('mousedown', onDown);
+    document.addEventListener('pointermove', onMove);
+    document.addEventListener('touchmove', onMove, { passive: false });
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('pointerup', onUp);
+    document.addEventListener('touchend', onUp, { passive: false });
+    document.addEventListener('touchcancel', onUp);
+    document.addEventListener('mouseup', onUp);
   }
   function makeWindowDraggable(w, id) {
     var top = w.querySelector('.hv-wtop'); if (!top) return;
     var sx = 0, sy = 0, ox = 0, oy = 0, dragging = false;
-    top.addEventListener('pointerdown', function (e) {
+    function getXY(e) {
+      if (e.touches && e.touches.length) return { x: e.touches[0].clientX, y: e.touches[0].clientY };
+      if (e.changedTouches && e.changedTouches.length) return { x: e.changedTouches[0].clientX, y: e.changedTouches[0].clientY };
+      return { x: e.clientX, y: e.clientY };
+    }
+    function onDown(e) {
       if (w.classList.contains('hv-full')) return;
       if (e.target.closest('.hv-wbtn')) return;
+      if (e.button != null && e.button !== 0 && e.type !== 'touchstart') return;
       dragging = true;
-      var p = loadWinPos(id); sx = e.clientX; sy = e.clientY; ox = p.x; oy = p.y;
+      var p = loadWinPos(id);
+      var c = getXY(e);
+      sx = c.x; sy = c.y; ox = p.x; oy = p.y;
       w.classList.add('hv-drag');
-      if (w.setPointerCapture) { try { w.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ } }
-    });
-    top.addEventListener('pointermove', function (e) {
+    }
+    function onMove(e) {
       if (!dragging) return;
-      var dx = e.clientX - sx, dy = e.clientY - sy;
+      var c = getXY(e);
+      if (c.x == null && c.y == null) return;
+      var dx = c.x - sx, dy = c.y - sy;
       if (Math.abs(dx) < 3 && Math.abs(dy) < 3) return; // 防误触抖动
       winUserPos[id] = true; // 标记：用户手动拖过了
       var p = { x: Math.max(0, Math.min(window.innerWidth - 60, ox + dx)), y: Math.max(0, Math.min(window.innerHeight - 34, oy + dy)), vertCenter: false, winW: 0 };
       saveWinPos(id, p); moveWinTo(w, id, p);
-    });
+    }
     function up() { dragging = false; w.classList.remove('hv-drag'); }
-    top.addEventListener('pointerup', up);
-    top.addEventListener('pointercancel', up);
+    top.addEventListener('pointerdown', onDown);
+    top.addEventListener('touchstart', onDown, { passive: false });
+    top.addEventListener('mousedown', onDown);
+    document.addEventListener('pointermove', onMove);
+    document.addEventListener('touchmove', onMove, { passive: false });
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('pointerup', up);
+    document.addEventListener('touchend', up, { passive: false });
+    document.addEventListener('touchcancel', up);
+    document.addEventListener('mouseup', up);
   }
   function openTray() { var tray = document.getElementById('hv-tray'); if (!tray) return; positionWindows(); tray.classList.add('open'); }
   function closeTray() { var t = document.getElementById('hv-tray'); if (t) t.classList.remove('open'); }
@@ -504,10 +551,59 @@
     if (!mesEl) return '';
     try {
       var t = mesEl.querySelector('.mes_text');
-      if (t) return t.innerHTML || '';
-      var content = mesEl.querySelector('.mes_block, .mes_content, .mes_textarea');
-      if (content) return content.innerHTML || '';
-      return '';
+      var html = '';
+      if (t) html = t.innerHTML || '';
+      if (!html) {
+        var content = mesEl.querySelector('.mes_block, .mes_content, .mes_textarea');
+        if (content) html = content.innerHTML || '';
+      }
+      // —— 穿透 shadow root 抓柏宝绘成品图，并插回原锚点位置 ——
+      // 正文里的 <bbi_image> 已被柏宝绘替换成空锚点 <div data-bbi-slot>，
+      // 成品图 <img.bbi-figure__img> 渲染进该锚点的 shadowRoot，querySelectorAll 看不见。
+      // 这里按锚点在正文中的顺序取图，并把图「插回对应锚点的位置」，
+      // 保证多图收藏时图仍在两段文字之间，而不是全部堆到末尾。
+      var collected = [];                     // collected[_si] = 某锚点取到的 img html（或空串）
+      var anchorList = t ? t.querySelectorAll('div[data-bbi-slot]') : [];
+      for (var _si = 0; _si < anchorList.length; _si++) {
+        var _a = anchorList[_si];
+        var _sr = null;
+        try { _sr = _a.shadowRoot; } catch (e3) { _sr = null; }
+        var got = '';
+        if (_sr) {
+          var _img = _sr.querySelector('img.bbi-figure__img') || _sr.querySelector('img');
+          if (_img) {
+            var _s = String(_img.getAttribute('src') || '').trim();
+            if (_s) {
+              got = '<img class="hv-collect-img" src="' + esc(_s) + '" style="max-width:100%;height:auto;border-radius:8px;margin:6px 0;display:block">';
+              logV('grab-shadow', '#' + _si + ' 抓到柏宝绘图 src="' + _s.slice(0, 70) + '"');
+            } else {
+              logV('grab-shadow', '#' + _si + ' 锚点有 img 但 src 为空');
+            }
+          } else {
+            logV('grab-shadow', '#' + _si + ' shadowRoot 内未找到 <img>');
+          }
+        } else {
+          logV('grab-shadow', '#' + _si + ' 锚点无 shadowRoot（图未生成）');
+        }
+        collected.push(got);
+      }
+      // 若取到了图，则把正文 HTML 里对应的锚点原位替换成图（多张按顺序）。
+      if (html && collected.length) {
+        var _replaced = 0;
+        // 逐首替换：<div data-bbi-slot...></div>
+        html = html.replace(/<div\s+data-bbi-slot[^>]*><\/div>/gi, function (m0) {
+          var _g = collected[_replaced] || '';
+          _replaced++;
+          return _g || m0;   // 该锚点没取到图则保留原锚点
+        });
+        logV('grab-position', '原位替换图 ' + _replaced + ' 个');
+      }
+      // 取证汇总（保留，便于排查）
+      var imgTotal = mesEl.querySelectorAll('img').length;
+      var slotN = t ? t.querySelectorAll('div[data-bbi-slot]').length : 0;
+      var gotN = 0; for (var _gi2 = 0; _gi2 < collected.length; _gi2++) if (collected[_gi2]) gotN++;
+      logV('grab-dbg', '整条img=' + imgTotal + ' slot锚点=' + slotN + ' 抓到图=' + gotN + ' mes_text.len=' + html.length);
+      return html;
     } catch (e) { return ''; }
   }
 
@@ -608,10 +704,13 @@
         '<div class="hv-gbody">';
       arr.forEach(function (it) {
         var gLbl = (it && it.group && String(it.group).trim()) ? ' · 组:' + esc(String(it.group).trim()) : '';
-        html += '<div class="hv-list-item" data-id="' + esc(it.id) + '">' +
+        var checked = state.expSelect && (it.id && state.expSel[it.id]) ? ' hv-exp-on' : '';
+        var box = state.expSelect ? '<div class="hv-exp-box' + checked + '" data-exp="1" data-item="' + esc(it.id) + '">' + (checked ? IC.ok : '') + '</div>' : '';
+        html += '<div class="hv-list-item' + (state.expSelect ? ' hv-exp-selectable' : '') + '" data-id="' + esc(it.id) + '">' +
+          box +
           '<div class="hv-li-tit">' + esc((it.note && String(it.note).trim()) ? String(it.note) : (snip(it.msgs, 0) || '未命名')) + '</div>' +
           '<div class="hv-li-sub">' + esc(fmtTime(it.time)) + ' · 第 ' + esc(it.startFloor) + '-' + esc(it.endFloor) + ' 楼 · ' + esc(it.chatTitle || '') + gLbl + '</div>' +
-          '<div class="hv-li-move" data-move="' + esc(it.id) + '" title="移到分组">' + IC.folder + '</div></div>';
+          (state.expSelect ? '' : '<div class="hv-li-move" data-move="' + esc(it.id) + '" title="移到分组">' + IC.folder + '</div>') + '</div>';
       });
       html += '</div></div>';
     });
@@ -650,6 +749,7 @@
       h += '<div class="' + cls + '"><span class="hv-nname">' + esc(nm) + '</span><div class="hv-ncontent">' + bodyContent + '</div></div>';
     });
     h += '</div>';
+    h += '<div class="hv-exp-one" data-expone="' + esc(it.id) + '">' + IC.export + ' 导出本条</div>';
     h += '<div class="hv-del" data-del="' + esc(it.id) + '">' + IC.x + ' 删除此收藏</div>';
     h += '</div>';
     rin.innerHTML = h;
@@ -891,6 +991,44 @@
     if (panel && panel.classList.contains('hv-on')) renderPanel(state.curFilter);
     hvToast('已删除', 'info');
   }
+  // 全屏扫图（取证）：列出所有 <img> 和 background-image 位置，定位生图挂在哪
+  function scanImages() {
+    try {
+      var all = document.querySelectorAll('img');
+      logV('scanimg', '=== 屏幕上 <img> 总数=' + all.length + ' ===');
+      for (var i = 0; i < all.length && i < 20; i++) {
+        var im = all[i];
+        var src = String(im.getAttribute('src') || '').slice(0, 70);
+        var ds = im.getAttribute('data-src') ? '(有data-src)' : '(无data-src)';
+        var inChat = !!(im.closest && im.closest('#chat'));
+        var inMes = !!(im.closest && im.closest('#chat .mes'));
+        var clsArr = [];
+        var anc = im;
+        for (var d = 0; d < 3 && anc; d++) { var tag = anc.tagName ? anc.tagName.toLowerCase() : '?'; var cl = String(anc.className || ''); if (tag) clsArr.push(tag + '.' + (cl ? String(cl).split(' ')[0] : '')); anc = anc.parentElement; }
+        logV('scanimg-img#' + i, 'src="' + src + '" ' + ds + ' inChat=' + (inChat ? 'Y' : 'N') + ' inMes=' + (inMes ? 'Y' : 'N') + ' lineage=' + clsArr.join(' > '));
+      }
+      // 统计 background-image 元素（限前300个防卡）
+      var bgHits = [];
+      var allEl = document.querySelectorAll('div, span, section, article, a, li');
+      var limit = Math.min(allEl.length, 3000);
+      for (var j = 0; j < limit; j++) {
+        var el = allEl[j];
+        try {
+          var bgi = getComputedStyle(el).backgroundImage;
+          if (bgi && bgi !== 'none' && bgi.indexOf('url(') === 0) {
+            var bcl = String(el.className || '');
+            var bid = el.id || '';
+            bgHits.push((el.tagName ? el.tagName.toLowerCase() : '?') + (bid ? '#' + bid : '') + (bcl ? '.' + bcl.split(' ')[0] : '') + ':' + bgi.slice(4, 40));
+            if (bgHits.length >= 12) break;
+          }
+        } catch (e2) { /* ignore */ }
+      }
+      logV('scanimg-bg', 'background-image 元素=' + bgHits.length + (bgHits.length ? ' :: ' + bgHits.join(' | ') : ''));
+      logV('scanimg', '=== 扫图完成（若 img 只有头像、bg 也没有生图地址，则图挂在别处/iframe/或生图为懒加载未入 DOM） ===');
+      hvToast('已扫 ' + all.length + ' 张img', 'info');
+    } catch (e) { logV('scanimg', 'err ' + e.message); }
+  }
+
   function scanOrbs() {
     try {
       var out = [];
@@ -923,6 +1061,57 @@
     } catch (e) { logV('orbscan', 'err ' + e.message); }
   }
 
+  // ==== 选择导出模式 ====
+  function beginExportSelect() {
+    state.expSelect = true; state.expSel = {};
+    var hint = document.getElementById('hv-exp-hint'); if (hint) hint.style.display = 'flex';
+    var p = document.getElementById('hv-panel'); if (p) p.classList.add('hv-exp-mode');
+    renderPanel(state.curFilter);
+    logV('exp', '进入选择导出模式');
+  }
+  function exitExpSelect() {
+    state.expSelect = false; state.expSel = {};
+    var hint = document.getElementById('hv-exp-hint'); if (hint) hint.style.display = 'none';
+    var p = document.getElementById('hv-panel'); if (p) p.classList.remove('hv-exp-mode');
+    renderPanel(state.curFilter);
+    logV('exp', '退出选择导出模式');
+  }
+  function expCount() { var n = 0; for (var k in state.expSel) if (state.expSel[k]) n++; return n; }
+  function updateExpHint() {
+    var h = document.getElementById('hv-exp-hint'); if (!h) return;
+    var c = h.querySelector('.hv-exp-count'); if (c) c.textContent = expCount();
+  }
+  function toggleExpSel(id) {
+    if (!id) return;
+    if (state.expSel[id]) { delete state.expSel[id]; }
+    else { state.expSel[id] = 1; }
+    renderPanel(state.curFilter);
+    updateExpHint();
+  }
+  function toggleExpAll() {
+    var store = loadStore();
+    var all = store && store.items ? store.items : [];
+    var any = false;
+    for (var i = 0; i < all.length; i++) { if (all[i] && !state.expSel[all[i].id]) { any = true; break; } }
+    if (any) { // 全选
+      state.expSel = {};
+      for (var j = 0; j < all.length; j++) if (all[j] && all[j].id) state.expSel[all[j].id] = 1;
+    } else { // 全不选
+      state.expSel = {};
+    }
+    renderPanel(state.curFilter);
+    updateExpHint();
+  }
+  function doExpSelected() {
+    var store = loadStore();
+    var all = store && store.items ? store.items : [];
+    var picked = all.filter(function (x) { return x && x.id && state.expSel[x.id]; });
+    if (!picked.length) { hvToast('尚未选择要导出的收藏', 'warn'); return; }
+    var ids = picked.map(function (x) { return x.id; });
+    exitExpSelect();
+    doExportItems(picked, '已选 ' + picked.length + ' 条');
+  }
+
   function openMove(id) {
     var store = loadStore(); var it = null;
     store.items.forEach(function (x) { if (String(x.id) === String(id)) it = x; });
@@ -951,13 +1140,124 @@
     logV('move', '移动到 ' + (g || '(无分组)') + ' moved=' + moved);
   }
 
-  function doExport() {
+  // —— 导出自包含 HTML 电子书 ——
+  // 把收藏打包成一个独立 HTML：正文(rendered 清洗后) + 图片内嵌 base64，
+  // 脱离酒馆、用任何浏览器打开即可看图看文。图片 fetch 失败则保留原 src。
+  function imgSrcForExport(src0) {
+    if (!src0) return src0;
+    // 已是 data: 直接返回
+    if (src0.indexOf('data:') === 0) return src0;
+    var s = String(src0).trim();
+    // 相对路径补全为绝对（相对当前页 origin）
+    var abs;
+    try { abs = new URL(s, location.href).href; } catch (e) { return src0; }
+    return abs;
+  }
+  // 把某段 rendered 里的 <img src> 逐个替换为 base64（前端 fetch + FileReader）
+  function inlineImages(html, done) {
+    var re = /<img[^>]*?src=\s*["']([^"'\s]+)["'][^>]*?>/gi;
+    var imgs = [];
+    var m;
+    while ((m = re.exec(html)) !== null) imgs.push({ full: m[0], src: m[1] });
+    if (!imgs.length) { done(html); return; }
+    var left = imgs.length; var out = html;
+    imgs.forEach(function (im, i) {
+      var url = imgSrcForExport(im.src);
+      fetch(url, { credentials: 'same-origin' })
+        .then(function (r) { if (!r.ok) throw new Error('http' + r.status); return r.blob(); })
+        .then(function (b) {
+          var fr = new FileReader();
+          fr.onloadend = function () {
+            if (typeof fr.result === 'string') {
+              var data = fr.result;
+              var token = im.full;
+              // 用占位替换避免正则在 replace 里出问题
+              var ph = '___HVIMG' + i + '___';
+              out = out.replace(token, function () { return '<img src="' + data + '" alt="收藏图" style="max-width:100%;height:auto;border-radius:10px;margin:10px 0;display:block">'; });
+            }
+            left--; if (left === 0) done(out);
+          };
+          fr.onerror = function () { left--; if (left === 0) done(out); };
+          fr.readAsDataURL(b);
+        })
+        .catch(function () { left--; if (left === 0) done(out); });
+    });
+  }
+  function escHtml(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '"', "'": '&#39;' }[c]; }); }
+  function doExport() { // 兼容旧调用：默认导出全部
     var store = loadStore();
-    var blob = new Blob([JSON.stringify(store, null, 2)], { type: 'application/json' });
-    var url = URL.createObjectURL(blob);
-    var a = document.createElement('a'); a.href = url; a.download = '一切皆可收纳_收藏_' + Date.now() + '.json';
-    document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(function () { URL.revokeObjectURL(url); }, 800);
+    var items = store && store.items ? store.items : [];
+    doExportItems(items, '全部收藏');
+  }
+  function doExportItems(items, label) {
+    var arr = Array.isArray(items) ? items.filter(function (x) { return x && x.id; }) : [];
+    if (!arr.length) { hvToast('请先选择要导出的收藏', 'warn'); return; }
+    hvToast('正在打包导出…', 'info');
+    // 逐条内嵌图片（串行处理 gathered）
+    var sections = [];
+    var queue = arr.slice();
+    var idx = 0;
+    function buildOneHtml() {
+      if (idx >= queue.length) {
+        finishExport(sections);
+        return;
+      }
+      var it = queue[idx++];
+      // 组装该条的阅读 HTML（重组 rendered 正文 + 元信息）
+      var body = '';
+      (it.msgs || []).forEach(function (mm) {
+        var me = !!mm.is_user || mm.role === 'user';
+        var nm = mm.name || (me ? '你' : '角色');
+        var c = '';
+        if (mm.rendered && String(mm.rendered).trim().length > 4) { c = cleanQuotes(String(mm.rendered)); }
+        else { c = '<p>' + escHtml(mm.mes || '') + '</p>'; }
+        body += '<div class="msg' + (me ? ' me' : '') + '"><span class="name">' + escHtml(nm) + '</span><div class="ct">' + c + '</div></div>';
+      });
+      var tag = it.role || '未分类';
+      var grp = (it.group && String(it.group).trim()) ? it.group : '';
+      var head = '<div class="entry"><div class="ehead"><span class="etag">' + escHtml(tag) + (grp ? ' · ' + escHtml(grp) : '') + '</span><span class="etime">' + escHtml(fmtFullTime(it.time)) + '</span></div>';
+      if (it.note) head += '<div class="enote">' + escHtml(it.note) + '</div>';
+      sections.push(head + '<div class="ebody">' + body + '</div></div>');
+      // 处理完再下一张（先攒到 sections，图片内嵌在 finish 做也行，但为省事直接下一步）
+      buildOneHtml();
+    }
+    function finishExport(sections) {
+      // 对 sections 里所有 <img src> 做 base64 内嵌（前端逐处处理）
+      var big = sections.join('\n');
+      inlineImages(big, function (finalBody) {
+        var doc = '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">'
+          + '<meta name="viewport" content="width=device-width,initial-scale=1">'
+          + '<title>一切皆可收纳 · 收藏合集</title><style>'
+          + 'body{font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif;background:#f5f5f7;color:#1d1d1f;margin:0;padding:24px 16px;line-height:1.8}'
+          + 'h1{font-size:20px;font-weight:700;margin:0 0 4px}.sub{color:#86868b;font-size:13px;margin-bottom:24px}'
+          + '.entry{background:#fff;border-radius:16px;padding:18px 20px;margin:0 auto 18px;max-width:720px}'
+          + '.ehead{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;font-size:13px}'
+          + '.etag{font-weight:700;color:#2a241c}.etime{color:#9a9a9e;font-size:11px}'
+          + '.enote{border-left:3px solid #d0b48a;padding:4px 12px;color:#6b5b3a;background:#faf6ec;border-radius:0 8px 8px 0;font-size:13px;margin-bottom:12px}'
+          + '.ebody{color:#3a3a3c}.msg{margin:0 0 14px}.msg .name{display:inline-block;color:#b98a4b;font-weight:600;margin-right:8px;font-size:13px}'
+          + '.msg .ct{font-size:14px;line-height:1.85;text-align:justify}'
+          + '.msg .ct details{background:#f6f6f8;border:1px solid #ececee;border-radius:10px;padding:8px 12px;margin:8px 0}'
+          + '.msg .ct details>summary{cursor:pointer;font-weight:600;color:#2a241c;list-style:none}'
+          + '.msg .ct img{max-width:100%;height:auto;border-radius:10px;margin:10px 0;display:block}'
+          + '.msg .ct pre{background:#f6f6f8;border:1px solid #ececee;border-radius:10px;padding:10px;overflow-x:auto}'
+          + '.msg .ct blockquote{border-left:3px solid #d0b48a;margin:8px 0;padding:4px 12px;color:#6d6d71;background:#fafafc}'
+          + '.msg .ct code{background:#f0f0f2;border-radius:4px;padding:1px 5px}'
+          + '.empty{text-align:center;color:#9a9a9e;padding:40px}'
+          + '</style></head><body>'
+          + '<div style="max-width:720px;margin:0 auto"></div>'
+          + '<h1>一切皆可收纳 · 收藏合集</h1><div class="sub">' + escHtml(label || '') + ' 共 ' + arr.length + ' 条 · 导出于 ' + escHtml(new Date().toLocaleString()) + '</div>'
+          + (finalBody || '<div class="empty">无内容</div>')
+          + '</body></html>';
+        var blob = new Blob([doc], { type: 'text/html;charset=utf-8' });
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a'); a.href = url; a.download = '一切皆可收纳_收藏合集_' + Date.now() + '.html';
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(function () { URL.revokeObjectURL(url); }, 800);
+        hvToast('已导出 ' + arr.length + ' 条收藏', 'ok');
+        logV('export', '导出HTML电子书 ' + arr.length + ' 条 label=' + label);
+      });
+    }
+    buildOneHtml();
   }
 
   /* ---------------- 事件委托 ---------------- */
@@ -1002,7 +1302,7 @@
       var panel = document.getElementById('hv-panel');
       if (panel && panel.classList.contains('hv-on')) {
         var act = e.target.closest('[data-a]');
-        if (act) { var a2 = act.dataset.a; if (a2 === 'closepanel') closePanel(); else if (a2 === 'export') doExport(); else if (a2 === 'togglepanel') toggleWin('hv-panel'); }
+        if (act) { var a2 = act.dataset.a; if (a2 === 'closepanel') closePanel(); else if (a2 === 'export') beginExportSelect(); else if (a2 === 'togglepanel') toggleWin('hv-panel'); }
         var fl = e.target.closest('.hv-fl');
         if (fl) { state.curFilter = fl.dataset.f; renderPanel(state.curFilter); return; }
         var gh = e.target.closest('[data-gfold]');
@@ -1013,6 +1313,13 @@
           var fname = gh.getAttribute('data-gfold-name');
           if (fname) { var fm = loadFold(); fm[fname] = folded ? 'fold' : 'open'; saveFold(fm); }
           return;
+        }
+        // 选择导出模式：点击勾选框或整条 -> 切换选中
+        if (state.expSelect) {
+          var eb = e.target.closest('[data-exp]');
+          if (eb) { toggleExpSel(eb.dataset.item); e.preventDefault(); e.stopPropagation(); return; }
+          var liExp = e.target.closest('.hv-list-item');
+          if (liExp) { toggleExpSel(liExp.dataset.id); e.preventDefault(); e.stopPropagation(); return; }
         }
         var mv = e.target.closest('[data-move]');
         if (mv) { openMove(mv.dataset.move); e.preventDefault(); e.stopPropagation(); return; }
@@ -1025,6 +1332,13 @@
         if (act2) { var a3 = act2.dataset.a; if (a3 === 'back' || a3 === 'closereader') closeReader(); else if (a3 === 'togglereader') toggleWin('hv-reader'); }
         var del = e.target.closest('[data-del]');
         if (del) { doDelete(del.dataset.del); return; }
+        var eo = e.target.closest('[data-expone]');
+        if (eo) {
+          var store2 = loadStore(); var one = null;
+          for (var oi = 0; oi < store2.items.length; oi++) if (String(store2.items[oi].id) === String(eo.dataset.expone)) { one = store2.items[oi]; break; }
+          if (one) doExportItems([one], '本条 · ' + (one.role || '未分类'));
+          return;
+        }
       }
       var mg = document.getElementById('hv-movegrp');
       if (mg && mg.classList.contains('hv-on')) {
@@ -1038,7 +1352,7 @@
       var lw = document.getElementById('hv-logwin');
       if (lw && lw.classList.contains('hv-on')) {
         var act3 = e.target.closest('[data-a]');
-        if (act3) { var a4 = act3.dataset.a; if (a4 === 'logclose') lw.classList.remove('hv-on'); else if (a4 === 'logclear') clearLog(); else if (a4 === 'logcopy') copyLog(); else if (a4 === 'logtest') logQuoteTest(); else if (a4 === 'orbscan') scanOrbs(); }
+        if (act3) { var a4 = act3.dataset.a; if (a4 === 'logclose') lw.classList.remove('hv-on'); else if (a4 === 'logclear') clearLog(); else if (a4 === 'logcopy') copyLog(); else if (a4 === 'logtest') logQuoteTest(); else if (a4 === 'orbscan') scanOrbs(); else if (a4 === 'scanimg') scanImages(); }
       }
       // 多选：点击整条消息
       var mes = e.target.closest('#chat .mes.hv-pickable');
@@ -1060,6 +1374,8 @@
       }
       var hint = e.target.closest('#hv-pick-hint');
       if (hint) { var a5 = e.target.closest('[data-a]'); if (a5) { if (a5.dataset.a === 'cancel') exitSelecting(); else if (a5.dataset.a === 'go') openConfirm(); } return; }
+      var eh = e.target.closest('#hv-exp-hint');
+      if (eh) { var a5b = e.target.closest('[data-a]'); if (a5b) { if (a5b.dataset.a === 'expall') toggleExpAll(); else if (a5b.dataset.a === 'expgo') doExpSelected(); else if (a5b.dataset.a === 'expcancel') exitExpSelect(); } return; }
       var cf = e.target.closest('#hv-confirm');
       if (cf) {
         var a6 = e.target.closest('[data-a]');
