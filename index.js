@@ -92,6 +92,7 @@
     folder: '<svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/></svg>',
     pic: '<svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="8.5" cy="10" r="1.5"/><path d="M21 15l-5-5-9 8"/></svg>',
     export: '<svg viewBox="0 0 24 24"><path d="M12 3v12M7 8l5-5 5 5M4 13v6a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-6"/></svg>',
+    zip: '<svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-9-9M12 3v9l4 4"/></svg>',
   };
 
   var state = { selecting: false, selected: {}, selMeta: {}, curFilter: null, pending: null, mgTarget: null, expSelect: false, expSel: {} };
@@ -149,6 +150,7 @@
         '<div class="hv-wtop"><span class="hv-wtitle">一切皆可收纳</span>' +
           '<div class="hv-wbtn" data-a="togglepanel" title="全屏/小窗">' + IC.full + '</div>' +
           '<div class="hv-wbtn" data-a="export" title="选择导出">' + IC.export + '</div>' +
+          '<div class="hv-wbtn" data-a="exportzip" title="全部导出ZIP">' + IC.zip + '</div>' +
           '<div class="hv-wbtn" data-a="closepanel" title="关闭">' + IC.x + '</div></div>' +
         '<div class="hv-filter" id="hv-filter"></div>' +
         '<div class="hv-body" id="hv-body"></div>' +
@@ -1184,6 +1186,101 @@
     });
   }
   function escHtml(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '"', "'": '&#39;' }[c]; }); }
+  /* ===== 全部导出 ZIP（收藏聊天记录） ===== */
+  function hvZipCrc32(bytes) {
+    var c, crc = 0xFFFFFFFF;
+    for (var i = 0; i < bytes.length; i++) {
+      c = (crc ^ bytes[i]) & 0xFF;
+      for (var k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+      crc = (crc >>> 8) ^ c;
+    }
+    return (crc ^ 0xFFFFFFFF) >>> 0;
+  }
+  function hvZipConcat(a, b) { var r = new Uint8Array(a.length + b.length); r.set(a); r.set(b, a.length); return r; }
+  function hvZipTime() { var d = new Date(); return { time: ((d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1)), date: (((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate()) }; }
+  function hvBuildZip(files) {
+    try {
+      var encoder = new TextEncoder();
+      var local = new Uint8Array(0), central = [], offset = 0;
+      Object.keys(files).forEach(function (n) {
+        var nameArr = encoder.encode(n);
+        var content = files[n];
+        var bytes = typeof content === 'string' ? encoder.encode(content) : content;
+        var crc = hvZipCrc32(bytes);
+        var lh = new Uint8Array(30 + nameArr.length);
+        lh[0]=0x50;lh[1]=0x4b;lh[2]=0x03;lh[3]=0x04; lh[4]=20;lh[5]=0; lh[6]=0;lh[7]=0; lh[8]=0;lh[9]=0;
+        var t = hvZipTime();
+        lh[10]=t.time&0xff; lh[11]=(t.time>>8)&0xff; lh[12]=t.date&0xff; lh[13]=(t.date>>8)&0xff;
+        lh[14]=0;lh[15]=0;lh[16]=0;lh[17]=0;
+        var csize=bytes.length, usize=bytes.length;
+        lh[18]=csize&0xff; lh[19]=(csize>>8)&0xff; lh[20]=(csize>>16)&0xff; lh[21]=(csize>>24)&0xff;
+        lh[22]=usize&0xff; lh[23]=(usize>>8)&0xff; lh[24]=(usize>>16)&0xff; lh[25]=(usize>>24)&0xff;
+        lh[26]=nameArr.length&0xff; lh[27]=(nameArr.length>>8)&0xff; lh[28]=0; lh[29]=0;
+        lh.set(nameArr, 30);
+        var seg = hvZipConcat(lh, bytes);
+        local = hvZipConcat(local, seg);
+        var thisOffset = offset; offset += seg.length;
+        central.push({ nameArr: nameArr, csize: csize, crc: crc, localOffset: thisOffset });
+      });
+      var cd = new Uint8Array(0);
+      central.forEach(function (c) {
+        var h = new Uint8Array(46 + c.nameArr.length);
+        h[0]=0x50;h[1]=0x4b;h[2]=0x01;h[3]=0x02; h[4]=20;h[5]=0; h[6]=20;h[7]=0; h[8]=0;h[9]=0; h[10]=0;h[11]=0;
+        var t=hvZipTime(); h[12]=t.time&0xff; h[13]=(t.time>>8)&0xff; h[14]=t.date&0xff; h[15]=(t.date>>8)&0xff;
+        h[16]=c.crc&0xff; h[17]=(c.crc>>8)&0xff; h[18]=(c.crc>>16)&0xff; h[19]=(c.crc>>24)&0xff;
+        h[20]=c.csize&0xff; h[21]=(c.csize>>8)&0xff; h[22]=(c.csize>>16)&0xff; h[23]=(c.csize>>24)&0xff;
+        h[24]=c.csize&0xff; h[25]=(c.csize>>8)&0xff; h[26]=(c.csize>>16)&0xff; h[27]=(c.csize>>24)&0xff;
+        h[28]=c.nameArr.length&0xff; h[29]=(c.nameArr.length>>8)&0xff;
+        h[30]=0;h[31]=0; h[32]=0;h[33]=0; h[34]=0;h[35]=0; h[36]=0;h[37]=0; h[38]=0;h[39]=0; h[42]=0;h[43]=0;
+        h[42]=c.localOffset&0xff; h[43]=(c.localOffset>>8)&0xff; h[44]=(c.localOffset>>16)&0xff; h[45]=(c.localOffset>>24)&0xff;
+        h.set(c.nameArr, 46);
+        cd = hvZipConcat(cd, h);
+      });
+      var eocd = new Uint8Array(22);
+      eocd[0]=0x50;eocd[1]=0x4b;eocd[2]=0x05;eocd[3]=0x06;
+      eocd[4]=0;eocd[5]=0; eocd[6]=0;eocd[7]=0;
+      eocd[8]=central.length&0xff; eocd[9]=(central.length>>8)&0xff;
+      eocd[10]=central.length&0xff; eocd[11]=(central.length>>8)&0xff;
+      var cdSize=cd.length; eocd[12]=cdSize&0xff; eocd[13]=(cdSize>>8)&0xff; eocd[14]=(cdSize>>16)&0xff; eocd[15]=(cdSize>>24)&0xff;
+      var cdOffset=local.length; eocd[16]=cdOffset&0xff; eocd[17]=(cdOffset>>8)&0xff; eocd[18]=(cdOffset>>16)&0xff; eocd[19]=(cdOffset>>24)&0xff;
+      return hvZipConcat(hvZipConcat(local, cd), eocd);
+    } catch (e) { logV('zip', '打包失败 ' + e); return null; }
+  }
+  function hvFavAllToZip() {
+    try {
+      var store = loadStore();
+      var items = store && store.items ? store.items : [];
+      if (!items.length) { hvToast('还没有收藏可导出', 'warn'); return; }
+      hvToast('正在打包全部收藏为 ZIP…', 'info');
+      var dataJson = JSON.stringify({ v: 1, items: items });
+      var html = '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>一切皆可收纳 · 全部收藏</title></head><body style="font-family:sans-serif;background:#f5f5f7;margin:0;padding:20px;line-height:1.8">'
+        + '<h1>一切皆可收纳 · 全部收藏</h1><div style="color:#86868b;margin-bottom:20px">共 ' + items.length + ' 条 · 导出于 ' + fmtFullTime(Date.now()) + '</div>';
+      items.forEach(function (it) {
+        var nm0 = it.note || (it.msgs && it.msgs[0] && it.msgs[0].name) || '';
+        html += '<div style="background:#fff;border-radius:12px;padding:14px 16px;margin:0 auto 14px;max-width:720px">'
+          + '<div style="font-weight:700;color:#2a241c">' + escHtml(nm0 || '收藏') + '</div>'
+          + '<div style="font-size:12px;color:#9a9a9e">' + escHtml(it.role || '未分类') + (it.group ? ' · ' + escHtml(it.group) : '') + '</div>';
+        (it.msgs || []).forEach(function (m) {
+          var me = !!m.is_user || m.role === 'user';
+          var nm = m.name || (me ? '你' : '角色');
+          var raw = m.rendered && String(m.rendered).length > 4 ? String(m.rendered) : '';
+          var txt = raw ? raw.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim() : (m.mes || '');
+          html += '<div style="border-left:3px solid #d0b48a;padding-left:10px;margin:8px 0"><span style="color:#b98a4b;font-weight:600">' + escHtml(nm) + '</span>: ' + escHtml(txt) + '</div>';
+        });
+        html += '</div>';
+      });
+      html += '</body></html>';
+      var bytes = hvBuildZip({ 'data.json': dataJson, 'index.html': html });
+      if (!bytes) { hvToast('导出失败', 'warn'); return; }
+      var blob = new Blob([bytes], { type: 'application/zip' });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a'); a.href = url; a.download = '一切皆可收纳_收藏_全部_' + Date.now() + '.zip';
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(function () { URL.revokeObjectURL(url); }, 800);
+      hvToast('已导出 ' + items.length + ' 条收藏为 ZIP', 'ok');
+      logV('zip', '导出全部ZIP ' + items.length + ' 条');
+    } catch (e) { logV('zip', '导出失败 ' + e); hvToast('导出失败', 'warn'); }
+  }
   function doExport() { // 兼容旧调用：默认导出全部
     var store = loadStore();
     var items = store && store.items ? store.items : [];
@@ -1302,7 +1399,7 @@
       var panel = document.getElementById('hv-panel');
       if (panel && panel.classList.contains('hv-on')) {
         var act = e.target.closest('[data-a]');
-        if (act) { var a2 = act.dataset.a; if (a2 === 'closepanel') closePanel(); else if (a2 === 'export') beginExportSelect(); else if (a2 === 'togglepanel') toggleWin('hv-panel'); }
+        if (act) { var a2 = act.dataset.a; if (a2 === 'closepanel') closePanel(); else if (a2 === 'export') beginExportSelect(); else if (a2 === 'togglepanel') toggleWin('hv-panel'); else if (a2 === 'exportzip') hvFavAllToZip(); }
         var fl = e.target.closest('.hv-fl');
         if (fl) { state.curFilter = fl.dataset.f; renderPanel(state.curFilter); return; }
         var gh = e.target.closest('[data-gfold]');
